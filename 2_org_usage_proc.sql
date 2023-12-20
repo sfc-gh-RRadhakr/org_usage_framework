@@ -11,6 +11,8 @@ EXECUTE AS   OWNER
 AS
 $$
 
+
+
 DECLARE
     JOB_NAME VARCHAR;
     JOB_ACTION VARCHAR;
@@ -35,7 +37,7 @@ BEGIN
     --  Get the list of account usage load process name to load. LoadName  should match the view name in the snowflake.organization_usage.
     LET ORG_TABLE_NAMES CURSOR(p) FOR
         SELECT LOADNAME,DATEKEY,HASHCOLUMNKEY,REPLACE(HASHCOLUMNKEY,',', ',''|'',') AS HASHCOLUMNKEY_LIST, active FROM
-        PLATFORM_DB.PLATFORM_APP.organization_usage_Load_Process  WHERE active=1;
+        GBI_PLATFORM_DB.PLATFORM_APP.organization_usage_Load_Process  WHERE active=1;
 
     LOAD_NAME_LIST:='';
     OPEN ORG_TABLE_NAMES;
@@ -52,7 +54,7 @@ BEGIN
 
         -- For the given materialized table ( load process name) gets START & END DATETIME
         DATE_SQL  := 'SELECT IFF(MAX('||DATEKEY ||')  IS NULL,TIMEADD(month,-36,CURRENT_TIMESTAMP()), TIMEADD(day,-1,MAX(' || DATEKEY ||')))  as start_datetime, TIMEADD(minute,+10,CURRENT_TIMESTAMP())  as end_datetime
-        FROM PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.' ||LOADNAME ;
+        FROM GBI_PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.' ||LOADNAME ;
         RES  := (execute immediate :DATE_SQL);
         LET DATE_CUR CURSOR FOR RES;
         FOR DATE_CUR_VAR IN DATE_CUR DO
@@ -62,12 +64,12 @@ BEGIN
         END FOR;
 
         --MAKE AN ENTRY TO JOB TABLE ORGANIZATION_USAGE_LOAD_RUN
-        INSERT INTO PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN (ORGANIZATION_USAGE_LOAD,JOB_STARTED_TS,JOB_DESCRIPTION)
+        INSERT INTO GBI_PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN (ORGANIZATION_USAGE_LOAD,JOB_STARTED_TS,JOB_DESCRIPTION)
         VALUES(:LOADNAME,CURRENT_TIMESTAMP(),NULL);
 
         ---  GET THE MAX RUN ID
         LET  MAX_RUN_CURSOR CURSOR(p) FOR
-            SELECT MAX(RUN_ID) as RUN_ID FROM  PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN
+            SELECT MAX(RUN_ID) as RUN_ID FROM  GBI_PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN
             WHERE UPPER(ORGANIZATION_USAGE_LOAD)=? and JOB_COMPLETED_TS IS NULL;
 
         OPEN MAX_RUN_CURSOR USING (:LOADNAME);
@@ -78,7 +80,7 @@ BEGIN
 
         --Getting the list of column name for the given load process name
         LET COLUMN_CURSOR  CURSOR(p) FOR
-            SELECT listagg (COLUMN_NAME,', ')  as COLUMN_LIST FROM  PLATFORM_DB.INFORMATION_SCHEMA.COLUMNS
+            SELECT listagg (COLUMN_NAME,', ')  as COLUMN_LIST FROM  GBI_PLATFORM_DB.INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_NAME=?  AND TABLE_SCHEMA ='ORGANIZATION_USAGE_HIST_APP' AND COLUMN_NAME NOT IN ('DW_EVENT_SHK','RUN_ID','REGION_NAME');
         OPEN COLUMN_CURSOR USING (:LOADNAME);
         FOR COLUMN_ITEM IN COLUMN_CURSOR DO
@@ -90,24 +92,24 @@ BEGIN
         IF (LOADNAME='QUERY_HISTORY') THEN
             COLUMN_LIST := REPLACE(COLUMN_LIST,'USAGE_DATE,','');
             COLUMN_LIST := REPLACE(COLUMN_LIST,'ORG_NAME,','');
-            LOAD_SQL := 'INSERT INTO PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME ||' (dw_event_shk ,RUN_ID,Usage_Date, ORG_NAME,' || COLUMN_LIST ||' ) ';
+            LOAD_SQL := 'INSERT INTO GBI_PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME ||' (dw_event_shk ,RUN_ID,Usage_Date, ORG_NAME,' || COLUMN_LIST ||' ) ';
             LOAD_SQL := LOAD_SQL || '  with l_stg as (Select sha1_binary( concat( upper(current_account()) ,  UPPER(current_region()) ,' || '''IST'','||'''|'','||  HASHCOLUMNKEY_LIST ||')) as dw_event_shk,  ' || COLUMN_LIST  || ' from SNOWFLAKE.ORGANIZATION_USAGE.'|| LOADNAME || '  WHERE ' || DATEKEY  || ' >=  ''';
             LOAD_SQL := LOAD_SQL || START_DATETIME || ''' ),l_deduped as ( select *   from ( select  row_number() over( partition by dw_event_shk order by 1 ) as seq_no ,s.* ';
             LOAD_SQL := LOAD_SQL || '  from l_stg s ) where seq_no = 1 )  SELECT dw_event_shk ,  '|| RUN_ID || ',TO_DATE(START_TIME) ,'|| '''IST'' as ORG_NAME,' || COLUMN_LIST  || ' from l_deduped  where dw_event_shk not in ( ';
-            LOAD_SQL := LOAD_SQL || ' select dw_event_shk from PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME || ' WHERE '|| DATEKEY || ' >= ''' || START_DATETIME || '''  ) order by  ' || DATEKEY ;
+            LOAD_SQL := LOAD_SQL || ' select dw_event_shk from GBI_PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME || ' WHERE '|| DATEKEY || ' >= ''' || START_DATETIME || '''  ) order by  ' || DATEKEY ;
         ELSE
-            LOAD_SQL := 'INSERT INTO PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME ||' (dw_event_shk ,RUN_ID, ' || COLUMN_LIST ||' ) ';
+            LOAD_SQL := 'INSERT INTO GBI_PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME ||' (dw_event_shk ,RUN_ID, ' || COLUMN_LIST ||' ) ';
             LOAD_SQL := LOAD_SQL || '  with l_stg as (Select sha1_binary( concat( upper(current_account()) ,  UPPER(current_region()) ,'||  HASHCOLUMNKEY_LIST ||')) as dw_event_shk,  ' || COLUMN_LIST  || ' from SNOWFLAKE.ORGANIZATION_USAGE.'|| LOADNAME || '  WHERE ' || DATEKEY  || ' >=  ''';
             LOAD_SQL := LOAD_SQL || START_DATETIME || ''' ),l_deduped as ( select *   from ( select  row_number() over( partition by dw_event_shk order by 1 ) as seq_no ,s.* ';
             LOAD_SQL := LOAD_SQL || '  from l_stg s ) where seq_no = 1 )  SELECT dw_event_shk ,'|| RUN_ID || ',' || COLUMN_LIST  || ' from l_deduped  where dw_event_shk not in ( ';
-            LOAD_SQL := LOAD_SQL || ' select dw_event_shk from PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME || ' WHERE '|| DATEKEY || ' >= ''' || START_DATETIME || '''  ) order by  ' || DATEKEY ;
+            LOAD_SQL := LOAD_SQL || ' select dw_event_shk from GBI_PLATFORM_DB.ORGANIZATION_USAGE_HIST_APP.'|| LOADNAME || ' WHERE '|| DATEKEY || ' >= ''' || START_DATETIME || '''  ) order by  ' || DATEKEY ;
         END IF;
 
         --RETURN LOAD_SQL;
         EXECUTE IMMEDIATE LOAD_SQL;
 
         --CLOSE THE JOB RUN
-         UPDATE PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN SET JOB_COMPLETED_TS=CURRENT_TIMESTAMP(),JOB_DESCRIPTION=OBJECT_CONSTRUCT('is_error','0')  WHERE  RUN_ID= :RUN_ID ;
+         UPDATE GBI_PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN SET JOB_COMPLETED_TS=CURRENT_TIMESTAMP(),JOB_DESCRIPTION=OBJECT_CONSTRUCT('is_error','0')  WHERE  RUN_ID= :RUN_ID ;
 
 
 END FOR;
@@ -121,13 +123,13 @@ EXCEPTION
     WHEN SCHEMA_NAME_EXCEPTION  THEN
         IS_ERROR := '1';
         JOB_LOG_DESCRIPTION := 'ERROR: INVALID PARAMETERS' ;
-        UPDATE PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN SET JOB_COMPLETED_TS=CURRENT_TIMESTAMP(),JOB_DESCRIPTION=OBJECT_CONSTRUCT('is_error',JOB_LOG_DESCRIPTION)  WHERE  RUN_ID= :RUN_ID ;
+        UPDATE GBI_PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN SET JOB_COMPLETED_TS=CURRENT_TIMESTAMP(),JOB_DESCRIPTION=OBJECT_CONSTRUCT('is_error',JOB_LOG_DESCRIPTION)  WHERE  RUN_ID= :RUN_ID ;
         RETURN ARRAY_CONSTRUCT(:IS_ERROR,:JOB_LOG_DESCRIPTION)  ;
 
     WHEN OTHER THEN
         IS_ERROR := '1';
         JOB_LOG_DESCRIPTION := 'SQLCODE:' || SQLCODE || ' SQLERRM:' || SQLERRM || ' SQLSTATE:' ||SQLSTATE;
-        UPDATE PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN SET JOB_COMPLETED_TS=CURRENT_TIMESTAMP(),JOB_DESCRIPTION=OBJECT_CONSTRUCT('is_error',JOB_LOG_DESCRIPTION)  WHERE  RUN_ID= :RUN_ID ;
+        UPDATE GBI_PLATFORM_DB.PLATFORM_APP.ORGANIZATION_USAGE_LOAD_RUN SET JOB_COMPLETED_TS=CURRENT_TIMESTAMP(),JOB_DESCRIPTION=OBJECT_CONSTRUCT('is_error',JOB_LOG_DESCRIPTION)  WHERE  RUN_ID= :RUN_ID ;
         RETURN ARRAY_CONSTRUCT(:IS_ERROR,:JOB_LOG_DESCRIPTION)  ;
 END;
 
